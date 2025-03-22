@@ -1,27 +1,81 @@
-# React example of minikit
+const express = require('express');
+const axios = require('axios');
+const ethers = require('ethers'); // For Worldcoin transactions
+const app = express();
+app.use(express.json());
 
-Apart from a frontend, you'll need a backend, this template contains an example of that as well
+// Your Worldcoin address
+const YOUR_WORLDCOIN_ADDRESS = '0x9cfc2bd986e313785dbd1841b02a744c314055b8';
 
-## To run, install:
+// Mock M-Pesa API
+const MPESA_API_URL = 'https://api.mpesa.com';
+const MPESA_API_KEY = 'your_mpesa_api_key';
 
-- deps, `cd frontend;pnpm i;cd -;cd backend;pnpm i`
-- ngrok - Create a free ngrok account, follow the official [docs](https://ngrok.com/docs/getting-started/)
-- nginx - use you favorite package manager :)
+// Mock Worldcoin API
+const WORLDCOIN_API_URL = 'https://api.worldcoin.org';
+const WORLDCOIN_API_KEY = 'your_worldcoin_api_key';
 
-### nginx setup
+// Worldcoin wallet setup
+const provider = new ethers.providers.JsonRpcProvider('https://mainnet.infura.io/v3/YOUR_INFURA_KEY');
+const wallet = new ethers.Wallet('YOUR_PRIVATE_KEY', provider);
 
-To serve multiple localhost applications through a single ngrok tunnel (only one available for free-tier users), you can use nginx as a reverse proxy. Follow the steps below to set it up:
+// Transfer endpoint
+app.post('/transfer', async (req, res) => {
+  const { userId, direction, amount, mpesaNumber, worldcoinAddress } = req.body;
 
-### Run nginx
+  try {
+    // Step 1: Verify World ID
+    const worldIdVerified = await verifyWorldId(userId);
+    if (!worldIdVerified) throw new Error('World ID verification failed.');
 
-Use the config provided in the root of this repo
-`sudo nginx -c full/path/to/this/repo/nginx.conf`
-or, if you run the command from the root dir
-`sudo nginx -c $(pwd)/nginx.conf`
+    // Step 2: Deduct 0.1 WLD fee
+    const feeTx = await wallet.sendTransaction({
+      to: YOUR_WORLDCOIN_ADDRESS,
+      value: ethers.utils.parseEther('0.1'), // 0.1 WLD
+    });
+    await feeTx.wait();
 
-To stop nginx run `sudo nginx -s stop`
+    // Step 3: Execute transfer
+    if (direction === 'mpesa_to_worldcoin') {
+      // Deduct from M-Pesa
+      await axios.post(`${MPESA_API_URL}/withdraw`, {
+        phoneNumber: mpesaNumber,
+        amount,
+        apiKey: MPESA_API_KEY,
+      });
 
-### Tunnel through Ngrok
+      // Deposit to Worldcoin
+      const depositTx = await wallet.sendTransaction({
+        to: worldcoinAddress,
+        value: ethers.utils.parseEther(amount.toString()),
+      });
+      await depositTx.wait();
+    } else if (direction === 'worldcoin_to_mpesa') {
+      // Deduct from Worldcoin
+      const withdrawTx = await wallet.sendTransaction({
+        to: YOUR_WORLDCOIN_ADDRESS, // Temporary holding
+        value: ethers.utils.parseEther(amount.toString()),
+      });
+      await withdrawTx.wait();
 
-`ngrok http 8080`
-The port doesn't matter, make sure it's the `listen` one from nginx config
+      // Deposit to M-Pesa
+      await axios.post(`${MPESA_API_URL}/deposit`, {
+        phoneNumber: mpesaNumber,
+        amount,
+        apiKey: MPESA_API_KEY,
+      });
+    }
+
+    res.status(200).json({ message: 'Transfer successful!' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// World ID verification (mock)
+async function verifyWorldId(userId) {
+  // Call World ID API to verify
+  return true; // Assume verification succeeds
+}
+
+app.listen(3000, () => console.log('Server running on port 3000'));
